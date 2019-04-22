@@ -1,0 +1,106 @@
+---
+title: "Spatial data in R"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+### Loading and manipulating spatial data
+
+There are several packages available to create and edit spatial data in R. This includes both raster and vector data. This script focuses on the latter. The relatively new sf (stands for simple features) package is one efficent way to load vector data. Other popular packages for spatial data are rgdal, sp, and raster.
+
+
+```{r, message=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(tmap)
+```
+
+First, let's load total population and county boundaries using the tidycensus package.
+
+```{r}
+ctypop<-get_acs(geography="county",variable="B01001_001",geometry=TRUE) %>%
+  st_transform(4326) 
+```
+
+We can also read in the centroids of tornado paths in the Southeast over the last 50 years. The st_as_sf function takes coordinates in the csv and converts them to spatial data.
+
+```{r}
+tornado<-read_csv("https://github.com/jshannon75/geog4300/raw/master/data/tornado_points.csv")
+tornado_sf<-st_as_sf(tornado,
+                  coords=c(x="CLONG",y="CLAT"), #Indicate the coordinate columns
+                  crs=4326, #Set the projections
+                  remove=FALSE) #Keep the coordinate columns
+```
+
+The sf package also has a set of spatial functions that can be used on these data. For example, you could convert these polygons to centroids. We then use geom_sf in ggplot to visualize those points.
+
+```{r}
+ctypop_GA<-ctypop %>%
+  mutate(st_fips=substr(GEOID,1,2)) %>% #Select just the first 2 digits of GEOID
+  filter(st_fips==13) 
+ggplot(ctypop_GA) + geom_sf()
+
+ctypop_GA_points<-st_centroid(ctypop_GA)
+ggplot(ctypop_GA_points) + geom_sf()
+```
+
+We can use st_join to join the county id to every tornado point based on its location. We join county data based on whether the point is within the county polygon.
+
+```{r}
+tornado_cty<-tornado_sf %>%
+  st_join(ctypop_GA,join=st_within) %>%
+  filter(is.na(GEOID)==FALSE)
+
+ggplot(tornado_cty) + geom_sf(aes(color=GEOID),show.legend=FALSE)
+```
+
+We can then remove the spatial data and tally these points by county. 
+
+```{r}
+tornado_cty_df<-tornado_cty %>%
+  st_set_geometry(NULL) #Remove the geographic data
+
+tornado_cty_count<-tornado_cty_df %>% 
+  group_by(GEOID,MONTH) %>%
+  summarise(count=n()) %>%
+  spread(MONTH,count,fill=0) %>%
+  mutate(total=Jan+Feb+Mar+Apr+May+June+July+Aug+Sept+Oct+Nov+Dec)
+```
+
+Using the tmap package, we can graph counties and tornado points
+
+```{r}
+tm_shape(ctypop_GA) +
+  tm_borders()+
+tm_shape(tornado_cty)+
+  tm_dots()
+```
+
+Or we can join the summary data and make a county choropleth map.
+
+```{r}
+cty_join<-ctypop_GA %>%
+  left_join(tornado_cty_count)
+
+tm_shape(cty_join)+
+  tm_polygons("total")
+```
+
+We can even make a small multiples map
+
+```{r}
+cty_long<-cty_join %>%
+  gather(Apr:Sept,key="month",value="count") %>%
+  mutate(month_f=factor(month,
+                        levels=c("Jan","Feb","Mar","Apr","May","June",
+                                 "July","Aug","Sept","Oct","Nov","Dec")))
+
+tm_shape(cty_long) +
+  tm_polygons("count") +
+  tm_facets("month_f")
+```
+
